@@ -2,14 +2,18 @@ use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::ops::{Index, IndexMut};
 use arrayvec::ArrayVec;
+use glam::Vec3A;
 
 pub mod geometry_util;
+
+use geometry_util::GeometryData;
 
 #[cfg(feature = "algorithms")]
 pub mod algorithms;
 
 pub type Hexagonish<T> = ArrayVec<T, 6>;
 
+#[derive(Clone, Debug, PartialEq)]
 pub struct Hexasphere<T> {
     subdivisions: usize,
     top: T,
@@ -20,9 +24,18 @@ pub struct Hexasphere<T> {
 impl<T> Hexasphere<T> {
     /// Assumes that the top index is 0
     /// in the hexasphere geometry crate.
-    pub fn from_hexasphere_geometry(subdivisions: usize, indices: &[u32], mut make: impl FnMut(u32, Coordinate) -> T) -> (Self, HashMap<u32, Hexagonish<u32>>) {
+    pub fn from_hexasphere_geometry(subdivisions: usize, indices: &[u32], make: impl FnMut(u32, Coordinate) -> T) -> (Self, HashMap<u32, Hexagonish<u32>>) {
+        let mut coordinate_store = HashMap::new();
+        Self::make_coordinate_store(indices, &mut coordinate_store);
+
+        (
+            Self::make_from_surrounding(subdivisions, &coordinate_store, make),
+            coordinate_store,
+        )
+    }
+
+    pub fn make_coordinate_store(indices: &[u32], coordinate_store: &mut HashMap<u32, Hexagonish<u32>>) {
         assert_eq!(indices.len() % 3, 0);
-        let mut coordinate_store: HashMap<u32, Hexagonish<u32>> = HashMap::new();
         indices
             .chunks(3)
             .for_each(|x| {
@@ -38,6 +51,9 @@ impl<T> Hexasphere<T> {
                                     }
                                 } else if let Some(idx_k) = list.iter().position(|&z| z == k) {
                                     list.insert(idx_k, j);
+                                } else {
+                                    list.push(j);
+                                    list.push(k);
                                 }
                             }
                         }
@@ -49,7 +65,13 @@ impl<T> Hexasphere<T> {
                     store_entry(c, a, b);
                 }
             });
+    }
 
+    pub fn make_from_surrounding(
+        subdivisions: usize,
+        coordinate_store: &HashMap<u32, Hexagonish<u32>>,
+        mut make: impl FnMut(u32, Coordinate) -> T,
+    ) -> Self {
         let top = make(0, Coordinate::Top);
         let bottom = make(11, Coordinate::Bottom);
 
@@ -86,15 +108,105 @@ impl<T> Hexasphere<T> {
             }
         }
 
-        (
-            Self {
-                subdivisions,
-                top,
-                bottom,
-                chunks
-            },
-            coordinate_store,
-        )
+        Self {
+            subdivisions,
+            top,
+            bottom,
+            chunks
+        }
+    }
+
+    /// `make` is run on the indices of the center of the new faces.
+    pub fn make_and_dual<E>(
+        subdivisions: usize,
+        indices: &[u32],
+        ico_points: &[Vec3A],
+        make_temporary: impl FnOnce(&GeometryData) -> E,
+        mut make: impl FnMut(u32, Hexagonish<u32>, Coordinate, &mut GeometryData, &mut E) -> T
+    ) -> (Self, GeometryData, E) {
+        let mut coordinate_store = HashMap::new();
+        Self::make_coordinate_store(indices, &mut coordinate_store);
+
+        let mut convert_to_dual_space = HashMap::new();
+
+        let mut dual_data = geometry_util::dual(
+            ico_points,
+            &coordinate_store,
+            |old, new, edges| {
+                convert_to_dual_space.insert(old, (new, edges));
+            }
+        );
+
+        let mut temp = make_temporary(&dual_data);
+
+        let surrounding = Self::make_from_surrounding(
+            subdivisions,
+            &coordinate_store,
+             |old, coord| {
+                 let (new, edges) = convert_to_dual_space.get(&old).unwrap().clone();
+
+                 make(new, edges, coord, &mut dual_data, &mut temp)
+             }
+        );
+
+        (surrounding, dual_data, temp)
+    }
+
+    /// example use case: https://play.rust-lang.org/?version=stable&mode=debug&edition=2021&gist=8acc11611ba777f8569b353208bd9275
+    pub fn chunked_dual<E>(
+        subdivisions: usize,
+        mut next_indices: impl FnMut(&mut Vec<u32>),
+        ico_points: &[Vec3A],
+        make_temporary: impl FnOnce(&[GeometryData]) -> E,
+        mut make: impl FnMut(Hexagonish<(usize, u32, Hexagonish<u32>)>, Coordinate, &[GeometryData], &mut E) -> T
+    ) -> (Self, Vec<GeometryData>, E) {
+        let mut acc_coordinate_store = HashMap::new();
+
+        let mut temp_coordinate_store = HashMap::new();
+
+        let mut convert_to_dual_space = HashMap::<u32, Hexagonish<(usize, u32, Hexagonish<u32>)>>::new();
+
+        let mut resulting_chunks = Vec::new();
+
+        let mut indices = Vec::new();
+
+        next_indices(&mut indices);
+
+        while indices.len() != 0 {
+            temp_coordinate_store.clear();
+            Self::make_coordinate_store(&indices, &mut temp_coordinate_store);
+            Self::make_coordinate_store(&indices, &mut acc_coordinate_store);
+
+            let dual_data = geometry_util::dual(
+                ico_points,
+                &temp_coordinate_store,
+                |old, new, edges| {
+                    convert_to_dual_space
+                        .entry(old)
+                        .or_insert_with(Hexagonish::new)
+                        .push((resulting_chunks.len(), new, edges));
+                }
+            );
+
+            resulting_chunks.push(dual_data);
+
+            indices.clear();
+            next_indices(&mut indices);
+        }
+
+        let mut temp = make_temporary(&resulting_chunks);
+
+        let surrounding = Self::make_from_surrounding(
+            subdivisions,
+            &acc_coordinate_store,
+            |old, coord| {
+                let results = convert_to_dual_space.remove(&old).unwrap();
+
+                make(results, coord, &resulting_chunks, &mut temp)
+            }
+        );
+
+        (surrounding, resulting_chunks, temp)
     }
 
     pub fn surrounding(&self, x: Coordinate) -> Hexagonish<Coordinate> {
@@ -273,6 +385,19 @@ impl<T> Hexasphere<T> {
     pub fn subdivisions(&self) -> usize {
         self.subdivisions
     }
+
+    pub fn change_type<Q>(&self, mut to: impl FnMut(&T) -> Q) -> Hexasphere<Q> {
+        Hexasphere {
+            subdivisions: self.subdivisions,
+            top: to(&self.top),
+            bottom: to(&self.bottom),
+            chunks: [0, 1, 2, 3, 4]
+                .map(|x| self.chunks[x].iter()
+                    .map(|x| to(x))
+                    .collect::<Vec<_>>()
+                )
+        }
+    }
 }
 
 #[cfg(test)]
@@ -306,6 +431,36 @@ impl<T> Index<Coordinate> for Hexasphere<T> {
 impl<T> IndexMut<Coordinate> for Hexasphere<T> {
     fn index_mut(&mut self, index: Coordinate) -> &mut Self::Output {
         match index {
+            Coordinate::Top => &mut self.top,
+            Coordinate::Bottom => &mut self.bottom,
+            Coordinate::Inside {
+                chunk,
+                short,
+                long,
+            } => &mut self.chunks[chunk as usize][short * 2 * (self.subdivisions + 1) + long]
+        }
+    }
+}
+
+impl<'a, T> Index<&'a Coordinate> for Hexasphere<T> {
+    type Output = T;
+
+    fn index(&self, index: &'a Coordinate) -> &Self::Output {
+        match *index {
+            Coordinate::Top => &self.top,
+            Coordinate::Bottom => &self.bottom,
+            Coordinate::Inside {
+                chunk,
+                short,
+                long,
+            } => &self.chunks[chunk as usize][short * 2 * (self.subdivisions + 1) + long]
+        }
+    }
+}
+
+impl<'a, T> IndexMut<&'a Coordinate> for Hexasphere<T> {
+    fn index_mut(&mut self, index: &'a Coordinate) -> &mut Self::Output {
+        match *index {
             Coordinate::Top => &mut self.top,
             Coordinate::Bottom => &mut self.bottom,
             Coordinate::Inside {

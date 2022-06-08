@@ -28,7 +28,11 @@ pub struct GeometryData {
     pub indices: Vec<u32>,
 }
 
-pub fn dual(ico_points: &[Vec3A], surrounding: &HashMap<u32, Hexagonish<u32>>) -> GeometryData {
+pub fn dual(
+    ico_points: &[Vec3A],
+    surrounding: &HashMap<u32, Hexagonish<u32>>,
+    mut make_translation: impl FnMut(u32, u32, Hexagonish<u32>),
+) -> GeometryData {
     let mut points = Vec::new();
     let mut indices = Vec::new();
 
@@ -36,6 +40,7 @@ pub fn dual(ico_points: &[Vec3A], surrounding: &HashMap<u32, Hexagonish<u32>>) -
 
     for (&face, around) in surrounding {
         let mid = points.len();
+
         let mut mid_val = Vec3A::ZERO;
         points.push(Vec3A::ZERO);
         for i in 0..around.len() {
@@ -58,13 +63,19 @@ pub fn dual(ico_points: &[Vec3A], surrounding: &HashMap<u32, Hexagonish<u32>>) -
 
         points[mid] = mid_val;
 
+        let mut edge_points = Hexagonish::new();
+
         for i in 0..around.len() {
             let a = mid as u32;
             let b = *triangle_set.get(&trio(face, around[i], around[(i + 1) % around.len()])).unwrap();
             let c = *triangle_set.get(&trio(face, around[(i + 1) % around.len()], around[(i + 2) % around.len()])).unwrap();
 
+            edge_points.push(b);
+
             indices.extend_from_slice(&[a, b, c]);
         }
+
+        make_translation(face, mid as u32, edge_points);
     }
 
     GeometryData {
