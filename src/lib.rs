@@ -1,5 +1,7 @@
+//! Example usage: https://play.rust-lang.org/?version=stable&mode=debug&edition=2021&gist=6ee9f10224131656ea652f52718df8cf
+
 use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::{Index, IndexMut};
 use arrayvec::ArrayVec;
 use glam::Vec3A;
@@ -11,8 +13,14 @@ use geometry_util::GeometryData;
 #[cfg(feature = "algorithms")]
 pub mod algorithms;
 
+/// Either 5 or 6 elements.
 pub type Hexagonish<T> = ArrayVec<T, 6>;
 
+/// Organizes data on a hexagon tiled sphere.
+///
+/// This does not deal with geometry at all,
+/// however the algorithms in its impl allow you
+/// to tie that into its creation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Hexasphere<T> {
     subdivisions: usize,
@@ -22,11 +30,23 @@ pub struct Hexasphere<T> {
 }
 
 impl<T> Hexasphere<T> {
-    /// Assumes that the top index is 0
-    /// in the hexasphere geometry crate.
+    /// Assumes that the geometry is from the hexasphere
+    /// geometry crate to organize itself.
+    ///
+    /// # Arguments
+    /// - `subdivisions` is the number of subdivisions applied
+    ///   to generate the geometry.
+    /// - `indices` is the indices yielded by `hexasphere`.
+    /// - `make` allows the user to map an index into the
+    ///   hexasphere geometry (an old index) into a new coordinate,
+    ///   as well as provide an entry for that coordinate.
+    ///
+    /// # Returns
+    /// - The organizational structure, `Self`.
+    /// - The adjacency map.
     pub fn from_hexasphere_geometry(subdivisions: usize, indices: &[u32], make: impl FnMut(u32, Coordinate) -> T) -> (Self, HashMap<u32, Hexagonish<u32>>) {
         let mut coordinate_store = HashMap::new();
-        Self::make_coordinate_store(indices, &mut coordinate_store);
+        make_coordinate_store(indices, &mut coordinate_store);
 
         (
             Self::make_from_surrounding(subdivisions, &coordinate_store, make),
@@ -34,39 +54,15 @@ impl<T> Hexasphere<T> {
         )
     }
 
-    pub fn make_coordinate_store(indices: &[u32], coordinate_store: &mut HashMap<u32, Hexagonish<u32>>) {
-        assert_eq!(indices.len() % 3, 0);
-        indices
-            .chunks(3)
-            .for_each(|x| {
-                if let &[a, b, c] = x {
-                    let mut store_entry = |i, j, k| {
-                        match coordinate_store.entry(i) {
-                            Entry::Vacant(x) => { x.insert(ArrayVec::from_iter([j, k])); },
-                            Entry::Occupied(x) => {
-                                let list = x.into_mut();
-                                if let Some(idx_j) = list.iter().position(|&z| z == j) {
-                                    if list[(idx_j + 1) % list.len()] != k {
-                                        list.insert(idx_j + 1, k);
-                                    }
-                                } else if let Some(idx_k) = list.iter().position(|&z| z == k) {
-                                    list.insert(idx_k, j);
-                                } else {
-                                    list.push(j);
-                                    list.push(k);
-                                }
-                            }
-                        }
-                    };
-
-                    // Order of the entries in the arrays matters!
-                    store_entry(a, b, c);
-                    store_entry(b, c, a);
-                    store_entry(c, a, b);
-                }
-            });
-    }
-
+    /// Creates the organization structure, `Hexasphere`.
+    ///
+    /// # Arguments
+    /// - `subdivisions` is the number of subdivisions the sphere was made with.
+    /// - `coordinate_store` is the adjacency map for the coordinates.
+    ///   Generate this with [`make_coordinate_store`]. Assumes that for a
+    ///   given index, the yielded list preserves the winding order.
+    /// - `make` allows the user to translate from an old index into
+    ///   a `Coordinate`, as well as providing an entry for that coordinate.
     pub fn make_from_surrounding(
         subdivisions: usize,
         coordinate_store: &HashMap<u32, Hexagonish<u32>>,
@@ -116,7 +112,26 @@ impl<T> Hexasphere<T> {
         }
     }
 
-    /// `make` is run on the indices of the center of the new faces.
+    /// Generates duals of geometry given indices and points.
+    ///
+    /// # Arguments
+    /// - `subdivisions`: Number of subdivisions the data was created with.
+    /// - `indices`: Indices of IcoSphere.
+    /// - `ico_points`: Points of IcoSphere.
+    /// - `make_temporary`: Allows user data to be created.
+    /// - `make`: Takes 5 parameters:
+    ///     - The index of the center of the new face in the new geometry.
+    ///     - The indices of the vertices of the new polygon.
+    ///     - The coordinate that this polygon is assigned.
+    ///     - The geometry data, should you want to modify or read it.
+    ///     - The temporary data generated by `make_temporary`.
+    ///
+    ///   Returns: the data to go in the slot of that coordinate.
+    ///
+    /// # Returns:
+    /// - The organization structure `Hexasphere`.
+    /// - The new `GeometryData`.
+    /// - The temporary data.
     pub fn make_and_dual<E>(
         subdivisions: usize,
         indices: &[u32],
@@ -125,12 +140,13 @@ impl<T> Hexasphere<T> {
         mut make: impl FnMut(u32, Hexagonish<u32>, Coordinate, &mut GeometryData, &mut E) -> T
     ) -> (Self, GeometryData, E) {
         let mut coordinate_store = HashMap::new();
-        Self::make_coordinate_store(indices, &mut coordinate_store);
+        make_coordinate_store(indices, &mut coordinate_store);
 
         let mut convert_to_dual_space = HashMap::new();
 
         let mut dual_data = geometry_util::dual(
             ico_points,
+            coordinate_store.iter().map(|(&x, around)| (x, Some(around))),
             &coordinate_store,
             |old, new, edges| {
                 convert_to_dual_space.insert(old, (new, edges));
@@ -152,7 +168,19 @@ impl<T> Hexasphere<T> {
         (surrounding, dual_data, temp)
     }
 
-    /// example use case: https://play.rust-lang.org/?version=stable&mode=debug&edition=2021&gist=8acc11611ba777f8569b353208bd9275
+    /// This duals the geometry, generates the organization structure, and also creates chunks.
+    ///
+    /// # Arguments
+    /// - `subdivisions`: Number of subdivisions.
+    /// - `next_indices`: Asks for the next set of indices (this is usually a call to
+    ///   `hexasphere`'s get triangle indices function.
+    /// - `ico_points` is the points of the sphere.
+    /// - `make_temporary` generates temporary data which will be processed alongside points.
+    /// - `make` takes as its first argument the list of buffers to which this
+    ///   coordinate belongs, (the `usize`), the index into each of the buffers (the `u32`),
+    ///   and the indices of the vertices of the polygon in each buffer, (the `Hexagonish<u32>`).
+    ///   Afterwards, it takes the coordinate to be processed, the new geometry data, and the
+    ///   temporary data.
     pub fn chunked_dual<E>(
         subdivisions: usize,
         mut next_indices: impl FnMut(&mut Vec<u32>),
@@ -162,8 +190,6 @@ impl<T> Hexasphere<T> {
     ) -> (Self, Vec<GeometryData>, E) {
         let mut acc_coordinate_store = HashMap::new();
 
-        let mut temp_coordinate_store = HashMap::new();
-
         let mut convert_to_dual_space = HashMap::<u32, Hexagonish<(usize, u32, Hexagonish<u32>)>>::new();
 
         let mut resulting_chunks = Vec::new();
@@ -172,14 +198,20 @@ impl<T> Hexasphere<T> {
 
         next_indices(&mut indices);
 
-        while indices.len() != 0 {
-            temp_coordinate_store.clear();
-            Self::make_coordinate_store(&indices, &mut temp_coordinate_store);
-            Self::make_coordinate_store(&indices, &mut acc_coordinate_store);
+        let mut sets = Vec::with_capacity(20);
 
+        while indices.len() != 0 {
+            sets.push(indices.iter().copied().collect::<HashSet<_>>());
+            make_coordinate_store(&indices, &mut acc_coordinate_store);
+            indices.clear();
+            next_indices(&mut indices);
+        }
+
+        for set in sets {
             let dual_data = geometry_util::dual(
                 ico_points,
-                &temp_coordinate_store,
+                set.into_iter().map(|x| (x, None)),
+                &acc_coordinate_store,
                 |old, new, edges| {
                     convert_to_dual_space
                         .entry(old)
@@ -189,9 +221,6 @@ impl<T> Hexasphere<T> {
             );
 
             resulting_chunks.push(dual_data);
-
-            indices.clear();
-            next_indices(&mut indices);
         }
 
         let mut temp = make_temporary(&resulting_chunks);
@@ -209,6 +238,7 @@ impl<T> Hexasphere<T> {
         (surrounding, resulting_chunks, temp)
     }
 
+    /// Yields the coordinates surrounding a given coordinate.
     pub fn surrounding(&self, x: Coordinate) -> Hexagonish<Coordinate> {
         match x {
             Coordinate::Top => [
@@ -472,6 +502,7 @@ impl<'a, T> IndexMut<&'a Coordinate> for Hexasphere<T> {
     }
 }
 
+/// Coordinate on a hexasphere.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum Coordinate {
     Top,
@@ -483,6 +514,7 @@ pub enum Coordinate {
     }
 }
 
+/// Short form to create a `Coordinate`.
 pub fn coord(chunk: u8, short: usize, long: usize) -> Coordinate {
     Coordinate::Inside {
         chunk,
@@ -495,6 +527,42 @@ impl Default for Coordinate {
     fn default() -> Self {
         Coordinate::Top
     }
+}
+
+/// Creates an adjacency map in place from this set of coordinates.
+///
+/// Preserves order and eliminates duplicates in each list.
+pub fn make_coordinate_store(indices: &[u32], coordinate_store: &mut HashMap<u32, Hexagonish<u32>>) {
+    assert_eq!(indices.len() % 3, 0);
+    indices
+        .chunks(3)
+        .for_each(|x| {
+            if let &[a, b, c] = x {
+                let mut store_entry = |i, j, k| {
+                    match coordinate_store.entry(i) {
+                        Entry::Vacant(x) => { x.insert(ArrayVec::from_iter([j, k])); },
+                        Entry::Occupied(x) => {
+                            let list = x.into_mut();
+                            if let Some(idx_j) = list.iter().position(|&z| z == j) {
+                                if list[(idx_j + 1) % list.len()] != k {
+                                    list.insert(idx_j + 1, k);
+                                }
+                            } else if let Some(idx_k) = list.iter().position(|&z| z == k) {
+                                list.insert(idx_k, j);
+                            } else {
+                                list.push(j);
+                                list.push(k);
+                            }
+                        }
+                    }
+                };
+
+                // Order of the entries in the arrays matters!
+                store_entry(a, b, c);
+                store_entry(b, c, a);
+                store_entry(c, a, b);
+            }
+        });
 }
 
 #[cfg(test)]

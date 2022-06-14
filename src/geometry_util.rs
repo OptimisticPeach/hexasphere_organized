@@ -28,9 +28,10 @@ pub struct GeometryData {
     pub indices: Vec<u32>,
 }
 
-pub fn dual(
+pub fn dual<'a>(
     ico_points: &[Vec3A],
-    surrounding: &HashMap<u32, Hexagonish<u32>>,
+    points_to_process: impl Iterator<Item = (u32, Option<&'a Hexagonish<u32>>)>,
+    surrounding: &'a HashMap<u32, Hexagonish<u32>>,
     mut make_translation: impl FnMut(u32, u32, Hexagonish<u32>),
 ) -> GeometryData {
     let mut points = Vec::new();
@@ -38,7 +39,8 @@ pub fn dual(
 
     let mut triangle_set = HashMap::<UnorderedTrio, u32>::new();
 
-    for (&face, around) in surrounding {
+    for (face, around) in points_to_process {
+        let around = around.unwrap_or_else(|| &surrounding[&face]);
         let mid = points.len();
 
         let mut mid_val = Vec3A::ZERO;
