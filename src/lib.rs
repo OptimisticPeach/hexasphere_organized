@@ -399,6 +399,13 @@ impl<T> Hexasphere<T> {
         }
     }
 
+    pub fn iter(&'_ self, coord: Coordinate) -> impl Iterator<Item = (&'_ T, Coordinate)> {
+        self
+            .surrounding(coord)
+            .into_iter()
+            .map(|x| (&self[x], x))
+    }
+
     pub fn is_valid(&self, coord: Coordinate) -> bool {
         match coord {
             Coordinate::Top | Coordinate::Bottom => true,
@@ -428,6 +435,70 @@ impl<T> Hexasphere<T> {
                 )
         }
     }
+
+    /// Parameters:
+    /// - `from` and `to` must be adjacent.
+    /// - `choose` takes in:
+    ///    1) A coordinate for a hexagon
+    ///    2) A coordinate for an adjacent pentagon
+    ///    3) Two possible directions to go in
+    ///
+    ///    And returns which of the two directions to go.
+    pub fn continue_line<'a, F>(
+        &'a self,
+        from: Coordinate,
+        to: Coordinate,
+        choose: F,
+    ) -> LineCont<'a, T, F>
+    where F: FnMut(
+        Coordinate,
+        Coordinate,
+        (Coordinate, Coordinate)
+    ) -> Coordinate {
+        LineCont {
+            sphere: self,
+            prev: from,
+            next: to,
+            choose,
+        }
+    }
+}
+
+pub struct LineCont<'a, T, F>
+    where F: FnMut(Coordinate, Coordinate, (Coordinate, Coordinate)) -> Coordinate
+{
+    sphere: &'a Hexasphere<T>,
+    prev: Coordinate,
+    next: Coordinate,
+    choose: F
+}
+
+impl<'a, T, F> Iterator for LineCont<'a, T, F>
+where F: FnMut(
+    Coordinate,
+    Coordinate,
+    (Coordinate, Coordinate)
+) -> Coordinate {
+    type Item = Coordinate;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let surrounding = self.sphere.surrounding(self.next);
+        let choice_a = rotate(self.prev, 3, &surrounding);
+        let choice_b = rotate(self.prev, -3, &surrounding);
+
+        let choice = if choice_a != choice_b {
+            (self.choose)(self.prev, self.next, (choice_a, choice_b))
+        } else {
+            choice_a
+        };
+
+        Some(choice)
+    }
+}
+
+fn rotate(previous: Coordinate, by: isize, surrounding: &[Coordinate]) -> Coordinate {
+    let idx = surrounding.iter().position(|&x| x == previous).unwrap();
+    surrounding[(idx as isize + by).rem_euclid(surrounding.len() as isize) as usize]
 }
 
 #[cfg(test)]
