@@ -49,12 +49,13 @@ pub fn dual<'a>(
             match triangle_set.entry(trio(face, around[i], around[(i + 1) % around.len()])) {
                 Entry::Vacant(x) => {
                     let avg = ico_points[face as usize] + ico_points[around[i] as usize] + ico_points[around[(i + 1) % around.len()] as usize];
+                    let avg = avg.normalize();
                     let idx = points.len();
-                    points.push(avg / 3.0);
+                    points.push(avg);
 
                     x.insert(idx as _);
 
-                    mid_val += avg / 3.0;
+                    mid_val += avg;
                 },
                 Entry::Occupied(x) =>
                     mid_val += points[*x.get() as usize],
