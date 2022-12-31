@@ -10,5 +10,5 @@ algorithms = ["pathfinding"]
 
 [dependencies]
 arrayvec = "0.7.2"
-glam = "0.21"
+glam = "0.22.0"
 pathfinding = { version = "3.0.12", optional = true }
